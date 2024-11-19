@@ -23,7 +23,7 @@ This is a simple user authentication system implemented in Go using the Gin fram
 
 - Go (version 1.16 or higher)
 - Git
-- sqlit
+- sqlite
 
 ### Installation
 
