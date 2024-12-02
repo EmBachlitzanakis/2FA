@@ -1,11 +1,16 @@
 package main
 
 import (
+	"log"
 	"net/http"
+	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/pquerna/otp/totp"
-	"gorm.io/driver/sqlite"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/driver/sqlserver"
 	"gorm.io/gorm"
 )
 
@@ -13,25 +18,30 @@ import (
 type User struct {
 	gorm.Model
 	Username     string `gorm:"uniqueIndex" json:"username"`
-	Password     string `json:"password"`
-	Secret       string `json:"secret"`
+	Password     string `json:"-"` // Exclude from JSON responses
+	Secret       string `json:"-"`
 	TwoFAEnabled bool   `json:"two_fa_enabled"`
 }
 
-var db *gorm.DB
+var (
+	db       *gorm.DB
+	jwtKey   = []byte(os.Getenv("JWT_SECRET")) // Load from environment variable
+	dbConn   = os.Getenv("DB_CONN_STRING")     // MS SQL Server connection string
+	issuer   = "MyApp"                         // For TOTP generation
+	tokenTTL = time.Hour * 24
+)
 
 func main() {
 	var err error
-	// Initialize the database connection
-	db, err = gorm.Open(sqlite.Open("users.db"), &gorm.Config{})
+	// Initialize the database connection (MS SQL)
+	db, err = gorm.Open(sqlserver.Open(dbConn), &gorm.Config{})
 	if err != nil {
-		panic("failed to connect to database")
+		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
 	// Migrate the schema
-	err = db.AutoMigrate(&User{})
-	if err != nil {
-		panic("failed to migrate database")
+	if err := db.AutoMigrate(&User{}); err != nil {
+		log.Fatalf("Failed to migrate database: %v", err)
 	}
 
 	router := gin.Default()
@@ -44,19 +54,35 @@ func main() {
 	auth.POST("/enable-2fa", enable2FA)
 	auth.POST("/verify", verify2FA)
 
-	router.Run(":8080")
+	protected := router.Group("/protected")
+	protected.Use(jwtMiddleware())
+	protected.GET("/dashboard", dashboard)
+
+	if err := router.Run(":8080"); err != nil {
+		log.Fatalf("Server failed to start: %v", err)
+	}
 }
 
 // signUp handles user registration
 func signUp(c *gin.Context) {
-	var newUser User
-	if err := c.ShouldBindJSON(&newUser); err != nil {
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Create the user in the database
-	if err := db.Create(&newUser).Error; err != nil {
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error hashing password"})
+		return
+	}
+
+	user := User{Username: req.Username, Password: string(hashedPassword)}
+	if err := db.Create(&user).Error; err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "Username already exists"})
 		return
 	}
@@ -64,7 +90,7 @@ func signUp(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"message": "User created successfully"})
 }
 
-// login handles user login
+// login handles user login and issues a JWT
 func login(c *gin.Context) {
 	var credentials struct {
 		Username string `json:"username"`
@@ -76,46 +102,31 @@ func login(c *gin.Context) {
 		return
 	}
 
-	// Find the user in the database
 	var user User
-	if err := db.Where("username = ? AND password = ?", credentials.Username, credentials.Password).First(&user).Error; err != nil {
+	if err := db.Where("username = ?", credentials.Username).First(&user).Error; err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Login successful"})
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(credentials.Password)); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+		return
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": user.ID,
+		"exp": time.Now().Add(tokenTTL).Unix(),
+	})
+	tokenString, err := token.SignedString(jwtKey)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Login successful", "token": tokenString})
 }
 
-// verify2FA handles 2FA code verification
-func verify2FA(c *gin.Context) {
-	var verification struct {
-		Username string `json:"username"`
-		Code     string `json:"code"`
-	}
-
-	if err := c.ShouldBindJSON(&verification); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Find the user in the database
-	var user User
-	if err := db.Where("username = ?", verification.Username).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-
-	// Verify the provided code
-	valid := totp.Validate(verification.Code, user.Secret)
-	if !valid {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid 2FA code"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "2FA code is valid"})
-}
-
-// enable2FA generates a secret and QR code for 2FA setup
+// enable2FA generates a secret for 2FA setup
 func enable2FA(c *gin.Context) {
 	var req struct {
 		Username string `json:"username"`
@@ -125,29 +136,79 @@ func enable2FA(c *gin.Context) {
 		return
 	}
 
-	// Find the user in the database
 	var user User
 	if err := db.Where("username = ?", req.Username).First(&user).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 
-	// Generate a secret for the user
 	secret, err := totp.Generate(totp.GenerateOpts{
-		Issuer:      "MyApp",
+		Issuer:      issuer,
 		AccountName: user.Username,
 		Period:      60,
 	})
-
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating QR code"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating 2FA secret"})
 		return
 	}
 
-	// Save the secret in the user object
 	user.Secret = secret.Secret()
 	user.TwoFAEnabled = true
 	db.Save(&user)
 
 	c.JSON(http.StatusOK, gin.H{"secret": secret.Secret(), "url": secret.URL()})
+}
+
+// verify2FA handles 2FA verification
+func verify2FA(c *gin.Context) {
+	var req struct {
+		Username string `json:"username"`
+		Code     string `json:"code"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var user User
+	if err := db.Where("username = ?", req.Username).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	if !totp.Validate(req.Code, user.Secret) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid 2FA code"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "2FA code is valid"})
+}
+
+// jwtMiddleware verifies the JWT token
+func jwtMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tokenString := c.GetHeader("Authorization")
+		if tokenString == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing token"})
+			c.Abort()
+			return
+		}
+
+		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			return jwtKey, nil
+		})
+
+		if err != nil || !token.Valid {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// dashboard is a protected route
+func dashboard(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"message": "Welcome to the dashboard!"})
 }
