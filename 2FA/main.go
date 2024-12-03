@@ -19,7 +19,7 @@ type User struct {
 	gorm.Model
 	Username     string `gorm:"uniqueIndex" json:"username"`
 	Password     string `json:"-"` // Exclude from JSON responses
-	Secret       string `json:"-"`
+	Secret       string `json:"-"` // 2FA secret
 	TwoFAEnabled bool   `json:"two_fa_enabled"`
 }
 
@@ -28,7 +28,7 @@ var (
 	jwtKey   = []byte(os.Getenv("JWT_SECRET")) // Load from environment variable
 	dbConn   = os.Getenv("DB_CONN_STRING")     // MS SQL Server connection string
 	issuer   = "MyApp"                         // For TOTP generation
-	tokenTTL = time.Hour * 24
+	tokenTTL = time.Hour * 24                  // Token TTL (1 day)
 )
 
 func main() {
@@ -44,20 +44,28 @@ func main() {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
 
+	// Initialize Gin router
 	router := gin.Default()
 	router.Use(gin.Recovery())
 	router.Use(gin.Logger())
 
+	// Authentication-related routes (public, no JWT required)
 	auth := router.Group("/auth")
-	auth.POST("/signup", signUp)
-	auth.POST("/login", login)
-	auth.POST("/enable-2fa", enable2FA)
-	auth.POST("/verify", verify2FA)
+	{
+		auth.POST("/signup", signUp)        // User registration
+		auth.POST("/enable-2fa", enable2FA) // Enable 2FA for user
+		auth.POST("/verify", verify2FA)     // Verify 2FA and issue JWT token (protected)
+	}
 
+	// Protected routes (requires JWT authentication)
 	protected := router.Group("/protected")
-	protected.Use(jwtMiddleware())
-	protected.GET("/dashboard", dashboard)
+	protected.Use(jwtMiddleware()) // JWT middleware applied here
+	{
+		protected.POST("/login", login)        // User login (protected with JWT)
+		protected.GET("/dashboard", dashboard) // Protected route, requires valid JWT
+	}
 
+	// Run the server
 	if err := router.Run(":8080"); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
@@ -90,8 +98,9 @@ func signUp(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"message": "User created successfully"})
 }
 
-// login handles user login and issues a JWT
+// login handles user login (JWT required)
 func login(c *gin.Context) {
+	// Bind JSON input
 	var credentials struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -102,28 +111,21 @@ func login(c *gin.Context) {
 		return
 	}
 
+	// Proceed with password authentication only after successful JWT validation
 	var user User
 	if err := db.Where("username = ?", credentials.Username).First(&user).Error; err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
+	// Check if the password is correct
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(credentials.Password)); err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": user.ID,
-		"exp": time.Now().Add(tokenTTL).Unix(),
-	})
-	tokenString, err := token.SignedString(jwtKey)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating token"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Login successful", "token": tokenString})
+	// If login successful, ask for 2FA code
+	c.JSON(http.StatusOK, gin.H{"message": "Login successful. Please verify your 2FA code."})
 }
 
 // enable2FA generates a secret for 2FA setup
@@ -159,7 +161,7 @@ func enable2FA(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"secret": secret.Secret(), "url": secret.URL()})
 }
 
-// verify2FA handles 2FA verification
+// verify2FA handles 2FA verification and JWT generation
 func verify2FA(c *gin.Context) {
 	var req struct {
 		Username string `json:"username"`
@@ -176,15 +178,28 @@ func verify2FA(c *gin.Context) {
 		return
 	}
 
+	// Verify 2FA code
 	if !totp.Validate(req.Code, user.Secret) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid 2FA code"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "2FA code is valid"})
+	// After successful 2FA, generate the JWT
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": user.ID,
+		"exp": time.Now().Add(tokenTTL).Unix(),
+	})
+	tokenString, err := token.SignedString(jwtKey)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating token"})
+		return
+	}
+
+	// Respond with the JWT token
+	c.JSON(http.StatusOK, gin.H{"message": "2FA verified, here's your token", "token": tokenString})
 }
 
-// jwtMiddleware verifies the JWT token
+// jwtMiddleware verifies the JWT token for protected routes
 func jwtMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tokenString := c.GetHeader("Authorization")
@@ -210,5 +225,5 @@ func jwtMiddleware() gin.HandlerFunc {
 
 // dashboard is a protected route
 func dashboard(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"message": "Welcome to the dashboard!"})
+	c.JSON(http.StatusOK, gin.H{"message": "Welcome to the dashboard"})
 }
