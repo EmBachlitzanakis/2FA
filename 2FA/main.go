@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -28,7 +29,7 @@ var (
 	jwtKey   = []byte(os.Getenv("JWT_SECRET")) // Load from environment variable
 	dbConn   = os.Getenv("DB_CONN_STRING")     // MS SQL Server connection string
 	issuer   = "MyApp"                         // For TOTP generation
-	tokenTTL = time.Hour * 24                  // Token TTL (1 day)
+	tokenTTL = time.Minute * 15                // Token TTL (15 minutes)
 )
 
 func main() {
@@ -49,19 +50,19 @@ func main() {
 	router.Use(gin.Recovery())
 	router.Use(gin.Logger())
 
-	// Authentication-related routes (public, no JWT required)
+	// Authentication-related routes
 	auth := router.Group("/auth")
 	{
 		auth.POST("/signup", signUp)        // User registration
 		auth.POST("/enable-2fa", enable2FA) // Enable 2FA for user
-		auth.POST("/verify", verify2FA)     // Verify 2FA and issue JWT token (protected)
+		auth.POST("/login", login)          // Username/password login
+		auth.POST("/verify-2fa", verify2FA) // Verify 2FA and issue JWT token
 	}
 
-	// Protected routes (requires JWT authentication)
+	// Protected routes
 	protected := router.Group("/protected")
 	protected.Use(jwtMiddleware()) // JWT middleware applied here
 	{
-		protected.POST("/login", login)        // User login (protected with JWT)
 		protected.GET("/dashboard", dashboard) // Protected route, requires valid JWT
 	}
 
@@ -98,9 +99,8 @@ func signUp(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"message": "User created successfully"})
 }
 
-// login handles user login (JWT required)
+// login handles user login (username/password verification)
 func login(c *gin.Context) {
-	// Bind JSON input
 	var credentials struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -111,21 +111,31 @@ func login(c *gin.Context) {
 		return
 	}
 
-	// Proceed with password authentication only after successful JWT validation
 	var user User
 	if err := db.Where("username = ?", credentials.Username).First(&user).Error; err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
-	// Check if the password is correct
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(credentials.Password)); err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
-	// If login successful, ask for 2FA code
-	c.JSON(http.StatusOK, gin.H{"message": "Login successful. Please verify your 2FA code."})
+	// Check if 2FA is enabled
+	if user.TwoFAEnabled {
+		c.JSON(http.StatusOK, gin.H{"message": "Login successful. Please verify 2FA."})
+		return
+	}
+
+	// If 2FA is not enabled, issue JWT directly
+	tokenString, err := generateJWT(user.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"token": tokenString})
 }
 
 // enable2FA generates a secret for 2FA setup
@@ -147,7 +157,6 @@ func enable2FA(c *gin.Context) {
 	secret, err := totp.Generate(totp.GenerateOpts{
 		Issuer:      issuer,
 		AccountName: user.Username,
-		Period:      60,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating 2FA secret"})
@@ -178,37 +187,31 @@ func verify2FA(c *gin.Context) {
 		return
 	}
 
-	// Verify 2FA code
 	if !totp.Validate(req.Code, user.Secret) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid 2FA code"})
 		return
 	}
 
-	// After successful 2FA, generate the JWT
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": user.ID,
-		"exp": time.Now().Add(tokenTTL).Unix(),
-	})
-	tokenString, err := token.SignedString(jwtKey)
+	tokenString, err := generateJWT(user.ID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating token"})
 		return
 	}
 
-	// Respond with the JWT token
-	c.JSON(http.StatusOK, gin.H{"message": "2FA verified, here's your token", "token": tokenString})
+	c.JSON(http.StatusOK, gin.H{"token": tokenString})
 }
 
 // jwtMiddleware verifies the JWT token for protected routes
 func jwtMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tokenString := c.GetHeader("Authorization")
-		if tokenString == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing token"})
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing or invalid token"})
 			c.Abort()
 			return
 		}
 
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
 			return jwtKey, nil
 		})
@@ -221,6 +224,16 @@ func jwtMiddleware() gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+// generateJWT creates a new JWT for a user
+func generateJWT(userID uint) (string, error) {
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": userID,
+		"iat": time.Now().Unix(),
+		"exp": time.Now().Add(tokenTTL).Unix(),
+	})
+	return token.SignedString(jwtKey)
 }
 
 // dashboard is a protected route
