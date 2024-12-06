@@ -1,6 +1,6 @@
 # Go Authentication System with 2FA
 
-This is a simple user authentication system implemented in Go using the **Fiber** web framework, **MS SQL Server** for the database, and **TOTP** (Time-based One-Time Password) for two-factor authentication (2FA). Users can sign up, log in, enable/verify 2FA, and access protected routes.
+This is a simple user authentication system implemented in Go using the **Fiber** web framework, **PostgreSQL** for the database, and **TOTP** (Time-based One-Time Password) for two-factor authentication (2FA). Users can sign up, log in, enable/verify 2FA, and access protected routes.
 
 ## Features
 
@@ -10,7 +10,7 @@ This is a simple user authentication system implemented in Go using the **Fiber*
 - QR code generation for easy 2FA setup
 - JWT-based authentication for secure access to protected routes
 - Simple JSON-based API
-- MS SQL Server integration for data storage
+- PostgreSQL integration for data storage
 
 ## Technologies Used
 
@@ -27,10 +27,9 @@ This is a simple user authentication system implemented in Go using the **Fiber*
 
 - Go (version 1.16 or higher)
 - Git
-- MS SQL Server instance (or use a cloud provider like Azure SQL)
+- PostgreSQL
 - Set up environment variables:
   - `JWT_SECRET` - Secret key for JWT generation
-  - `DB_CONN_STRING` - MS SQL Server connection string (e.g., `sqlserver://username:password@localhost:1433?database=your_db`)
 
 ### Installation
 
@@ -134,7 +133,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-- [Gin Gonic](https://github.com/gin-gonic/gin) - Web framework for Go.
+
 - [pquerna/otp](https://github.com/pquerna/otp) - TOTP library for Go.
 - [golang.org/x/crypto/bcrypt](https://pkg.go.dev/golang.org/x/crypto/bcrypt) - Password hashing library.
 - [auth-microservice](https://github.com/rfashwall/auth-microservice) - auth microservices
