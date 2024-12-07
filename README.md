@@ -16,7 +16,7 @@ This is a simple user authentication system implemented in Go using the **Fiber*
 
 - Go
 - **Fiber** - Web framework for Go
-- **MS SQL Server** - Database for user data
+- **PostgreSQL** - Database for user data
 - **TOTP** - Time-based One-Time Password (for 2FA)
 - **bcrypt** - Password hashing
 - **JWT** - JSON Web Tokens for authentication
