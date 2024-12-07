@@ -14,7 +14,7 @@ This is a simple user authentication system implemented in Go using the **Fiber*
 
 ## Technologies Used
 
-- Go
+- **Go**
 - **Fiber** - Web framework for Go
 - **PostgreSQL** - Database for user data
 - **TOTP** - Time-based One-Time Password (for 2FA)
@@ -136,4 +136,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - [pquerna/otp](https://github.com/pquerna/otp) - TOTP library for Go.
 - [golang.org/x/crypto/bcrypt](https://pkg.go.dev/golang.org/x/crypto/bcrypt) - Password hashing library.
-- [auth-microservice](https://github.com/rfashwall/auth-microservice) - auth microservices
