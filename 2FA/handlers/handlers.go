@@ -22,6 +22,7 @@ func SignUp(c *fiber.Ctx) error {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		Role     string `json:"role"`
 	}
 
 	if err := c.BodyParser(&req); err != nil {
@@ -32,8 +33,12 @@ func SignUp(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error hashing password"})
 	}
+	var role model.Role
+	if err := database.DB.Where("name = ?", req.Role).First(&role).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error checking role"})
+	}
 
-	user := model.User{Username: req.Username, Password: string(hashedPassword)}
+	user := model.User{Username: req.Username, Password: string(hashedPassword), Role: role}
 	if err := database.DB.Create(&user).Error; err != nil {
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Username already exists"})
 	}
@@ -61,13 +66,11 @@ func Login(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid credentials"})
 	}
 
-	// Check if 2FA is enabled
 	if user.TwoFAEnabled {
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "Login successful. Please verify 2FA."})
 	}
 
-	// If 2FA is not enabled, issue JWT directly
-	tokenString, err := generateJWT(user.ID)
+	tokenString, err := generateJWT(user.ID, user.Role.Name)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error generating token"})
 	}
@@ -116,28 +119,36 @@ func Verify2FA(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	// Fetch the user from the database
 	var user model.User
 	if err := database.DB.Where("username = ?", req.Username).First(&user).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "User not found"})
 	}
 
-	// Validate the TOTP code
 	if !totp.Validate(req.Code, user.Secret) {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid 2FA code"})
 	}
 
-	// Success response
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "2FA code is valid"})
 }
 
-// generateJWT creates a new JWT for a user
-func generateJWT(userID uint) (string, error) {
+// // generateJWT creates a new JWT for a user
+// func generateJWT(userID uint) (string, error) {
+// 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+// 		"sub": userID,
+// 		"iat": time.Now().Unix(),
+// 		"exp": time.Now().Add(tokenTTL).Unix(),
+// 	})
+// 	return token.SignedString(jwtKey)
+// }
+
+func generateJWT(userID uint, role string) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": userID,
-		"iat": time.Now().Unix(),
-		"exp": time.Now().Add(tokenTTL).Unix(),
+		"sub":  userID,
+		"role": role,
+		"iat":  time.Now().Unix(),
+		"exp":  time.Now().Add(tokenTTL).Unix(),
 	})
+
 	return token.SignedString(jwtKey)
 }
 

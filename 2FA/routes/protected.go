@@ -10,5 +10,7 @@ import (
 // Protected routes
 func ProtectedRoutes(app *fiber.App) {
 	protected := app.Group("/protected", middleware.JWTMiddleware)
-	protected.Get("/dashboard", handlers.Dashboard)
+	// Role-based access for dashboard
+	protected.Get("/dashboard", middleware.AuthorizeRoles("admin", "moderator"), handlers.Dashboard)
+
 }
