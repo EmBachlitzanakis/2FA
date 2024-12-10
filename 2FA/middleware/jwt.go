@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"crypto/rsa"
+	"fmt"
 	"strings"
 
 	"os"
@@ -11,7 +13,6 @@ import (
 
 var jwtKey = []byte(os.Getenv("JWT_SECRET"))
 
-// JWTMiddleware checks the validity of the JWT token
 func JWTMiddleware(c *fiber.Ctx) error {
 	authHeader := c.Get("Authorization")
 	if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
@@ -20,19 +21,42 @@ func JWTMiddleware(c *fiber.Ctx) error {
 
 	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 
+	// Load public key for verification
+	publicKey, err := loadPublicKey()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error loading public key"})
+	}
+
+	// Parse and verify the token
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		return jwtKey, nil
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return publicKey, nil
 	})
 
 	if err != nil || !token.Valid {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid token"})
 	}
 
+	// Extract claims
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid token claims"})
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid claims"})
 	}
 
+	// Validate 'aud' claim
+	if claims["aud"] != "your-application" {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid audience"})
+	}
+
+	// Validate 'iss' claim
+	if claims["iss"] != "your-auth-server" {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid issuer"})
+	}
+
+	// Set user details in context
+	c.Locals("userID", claims["sub"])
 	c.Locals("userRole", claims["role"])
 
 	return c.Next()
@@ -56,4 +80,12 @@ func AuthorizeRoles(roles ...string) fiber.Handler {
 		// Role doesn't match
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Access denied"})
 	}
+}
+
+func loadPublicKey() (*rsa.PublicKey, error) {
+	publicKeyData, err := os.ReadFile("path/to/public.key")
+	if err != nil {
+		return nil, err
+	}
+	return jwt.ParseRSAPublicKeyFromPEM(publicKeyData)
 }

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"crypto/rsa"
 	"os"
 	"time"
 
@@ -70,12 +71,27 @@ func Login(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "Login successful. Please verify 2FA."})
 	}
 
-	tokenString, err := generateJWT(user.ID, user.Role.Name)
+	accessToken, err := generateJWT(user.ID, user.Role.Name)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error generating token"})
 	}
 
-	return c.Status(fiber.StatusOK).JSON(fiber.Map{"token": tokenString})
+	refreshToken, err := generateRefreshToken(user.ID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error generating refresh token"})
+	}
+
+	// Store refresh token securely (optional)
+	user.RefreshToken = refreshToken
+	if err := database.DB.Save(&user).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error saving refresh token"})
+	}
+
+	// Return the tokens
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+	})
 }
 
 // enable2FA generates a secret for 2FA setup
@@ -131,28 +147,89 @@ func Verify2FA(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "2FA code is valid"})
 }
 
-// // generateJWT creates a new JWT for a user
-// func generateJWT(userID uint) (string, error) {
-// 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-// 		"sub": userID,
-// 		"iat": time.Now().Unix(),
-// 		"exp": time.Now().Add(tokenTTL).Unix(),
-// 	})
-// 	return token.SignedString(jwtKey)
-// }
+func RefreshToken(c *fiber.Ctx) error {
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
 
-func generateJWT(userID uint, role string) (string, error) {
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub":  userID,
-		"role": role,
-		"iat":  time.Now().Unix(),
-		"exp":  time.Now().Add(tokenTTL).Unix(),
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request"})
+	}
+
+	// Parse and validate the refresh token
+	token, err := jwt.Parse(req.RefreshToken, func(token *jwt.Token) (interface{}, error) {
+		return jwtKey, nil
 	})
 
-	return token.SignedString(jwtKey)
+	if err != nil || !token.Valid {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid refresh token"})
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || claims["sub"] == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid token claims"})
+	}
+
+	userID := uint(claims["sub"].(float64))
+
+	// Verify refresh token matches the stored token (if stored)
+	var user model.User
+	if err := database.DB.First(&user, userID).Error; err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "User not found"})
+	}
+
+	if user.RefreshToken != req.RefreshToken {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid refresh token"})
+	}
+
+	// Generate a new access token
+	accessToken, err := generateJWT(user.ID, user.Role.Name)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error generating access token"})
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{"access_token": accessToken})
+}
+
+func generateJWT(userID uint, role string) (string, error) {
+	claims := jwt.MapClaims{
+		"sub":  userID,                          // Subject (user ID)
+		"role": role,                            // User's role
+		"aud":  "your-application",              // Audience
+		"iss":  "your-auth-server",              // Issuer
+		"iat":  time.Now().Unix(),               // Issued at
+		"exp":  time.Now().Add(tokenTTL).Unix(), // Expiration time
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+
+	privateKey, err := loadPrivateKey()
+	if err != nil {
+		return "", err
+	}
+	return token.SignedString(privateKey)
 }
 
 // dashboard is a protected route for displaying the dashboard
 func Dashboard(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "Welcome to the dashboard"})
+}
+
+func loadPrivateKey() (*rsa.PrivateKey, error) {
+	privateKeyData, err := os.ReadFile("path/to/private.key")
+	if err != nil {
+		return nil, err
+	}
+	return jwt.ParseRSAPrivateKeyFromPEM(privateKeyData)
+}
+
+func generateRefreshToken(userID uint) (string, error) {
+	claims := jwt.MapClaims{
+		"sub": userID,
+		"iat": time.Now().Unix(),
+		"exp": time.Now().Add(7 * 24 * time.Hour).Unix(), // Expires in 7 days
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(jwtKey)
 }
