@@ -1,12 +1,11 @@
 package handlers
 
 import (
-	"crypto/rsa"
 	"os"
-	"time"
 
 	"2FA/database"
 	"2FA/model"
+	"2FA/utils"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
@@ -16,7 +15,8 @@ import (
 
 // JWT secret and token expiration time
 var jwtKey = []byte(os.Getenv("JWT_SECRET"))
-var tokenTTL = time.Minute * 15 // Token TTL (15 minutes)
+
+//var tokenTTL = time.Minute * 15 // Token TTL (15 minutes)
 
 // signUp handles user registration
 func SignUp(c *fiber.Ctx) error {
@@ -71,12 +71,12 @@ func Login(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "Login successful. Please verify 2FA."})
 	}
 
-	accessToken, err := generateJWT(user.ID, user.Role.Name)
+	accessToken, err := utils.GenerateJWT(user.ID, user.Role.Name)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error generating token"})
 	}
 
-	refreshToken, err := generateRefreshToken(user.ID)
+	refreshToken, err := utils.GenerateRefreshToken(user.ID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error generating refresh token"})
 	}
@@ -183,7 +183,7 @@ func RefreshToken(c *fiber.Ctx) error {
 	}
 
 	// Generate a new access token
-	accessToken, err := generateJWT(user.ID, user.Role.Name)
+	accessToken, err := utils.GenerateJWT(user.ID, user.Role.Name)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error generating access token"})
 	}
@@ -191,45 +191,7 @@ func RefreshToken(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"access_token": accessToken})
 }
 
-func generateJWT(userID uint, role string) (string, error) {
-	claims := jwt.MapClaims{
-		"sub":  userID,                          // Subject (user ID)
-		"role": role,                            // User's role
-		"aud":  "your-application",              // Audience
-		"iss":  "your-auth-server",              // Issuer
-		"iat":  time.Now().Unix(),               // Issued at
-		"exp":  time.Now().Add(tokenTTL).Unix(), // Expiration time
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-
-	privateKey, err := loadPrivateKey()
-	if err != nil {
-		return "", err
-	}
-	return token.SignedString(privateKey)
-}
-
 // dashboard is a protected route for displaying the dashboard
 func Dashboard(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "Welcome to the dashboard"})
-}
-
-func loadPrivateKey() (*rsa.PrivateKey, error) {
-	privateKeyData, err := os.ReadFile("path/to/private.key")
-	if err != nil {
-		return nil, err
-	}
-	return jwt.ParseRSAPrivateKeyFromPEM(privateKeyData)
-}
-
-func generateRefreshToken(userID uint) (string, error) {
-	claims := jwt.MapClaims{
-		"sub": userID,
-		"iat": time.Now().Unix(),
-		"exp": time.Now().Add(7 * 24 * time.Hour).Unix(), // Expires in 7 days
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(jwtKey)
 }

@@ -1,17 +1,13 @@
 package middleware
 
 import (
-	"crypto/rsa"
+	"2FA/utils"
 	"fmt"
 	"strings"
-
-	"os"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 )
-
-var jwtKey = []byte(os.Getenv("JWT_SECRET"))
 
 func JWTMiddleware(c *fiber.Ctx) error {
 	authHeader := c.Get("Authorization")
@@ -22,7 +18,7 @@ func JWTMiddleware(c *fiber.Ctx) error {
 	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 
 	// Load public key for verification
-	publicKey, err := loadPublicKey()
+	publicKey, err := utils.LoadPublicKey()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error loading public key"})
 	}
@@ -80,12 +76,4 @@ func AuthorizeRoles(roles ...string) fiber.Handler {
 		// Role doesn't match
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "Access denied"})
 	}
-}
-
-func loadPublicKey() (*rsa.PublicKey, error) {
-	publicKeyData, err := os.ReadFile("path/to/public.key")
-	if err != nil {
-		return nil, err
-	}
-	return jwt.ParseRSAPublicKeyFromPEM(publicKeyData)
 }
