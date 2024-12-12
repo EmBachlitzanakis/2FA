@@ -1,6 +1,6 @@
-# Go Authentication System with 2FA
+# Go Authentication System with 2FA, Refresh Tokens, and Authorization
 
-This is a simple user authentication system implemented in Go using the **Fiber** web framework, **PostgreSQL** for the database, and **TOTP** (Time-based One-Time Password) for two-factor authentication (2FA). Users can sign up, log in, enable/verify 2FA, and access protected routes.
+This user authentication system in Go includes **role-based access control (RBAC)** and **refresh tokens**. It supports user registration, login, two-factor authentication (2FA) using TOTP, and secure access to protected routes with role-based permissions.
 
 ## Features
 
@@ -8,9 +8,11 @@ This is a simple user authentication system implemented in Go using the **Fiber*
 - User login with username and password
 - Two-factor authentication (2FA) using TOTP
 - QR code generation for easy 2FA setup
-- JWT-based authentication for secure access to protected routes
-- Simple JSON-based API
+- JWT-based access tokens for authorization
+- Refresh tokens for session management
+- Role-based access control (RBAC)
 - PostgreSQL integration for data storage
+- Simple JSON-based API
 
 ## Technologies Used
 
@@ -20,6 +22,7 @@ This is a simple user authentication system implemented in Go using the **Fiber*
 - **TOTP** - Time-based One-Time Password (for 2FA)
 - **bcrypt** - Password hashing
 - **JWT** - JSON Web Tokens for authentication
+- **Role-Based Access Control (RBAC)** - Authorization based on roles
 
 ## Getting Started
 
@@ -30,6 +33,8 @@ This is a simple user authentication system implemented in Go using the **Fiber*
 - PostgreSQL
 - Set up environment variables:
   - `JWT_SECRET` - Secret key for JWT generation
+  - `PRIVATE_KEY` - Private key for signing access tokens
+  - `PUBLIC_KEY` - Public key for validating access tokens
 
 ### Installation
 
@@ -64,7 +69,8 @@ The application will start on `http://localhost:8080`.
     ```json
     {
         "username": "your_username",
-        "password": "your_password"
+        "password": "your_password",
+        "role": "user" // or "admin"
     }
     ```
 - **Response**:
@@ -83,7 +89,13 @@ The application will start on `http://localhost:8080`.
     }
     ```
 - **Response**:
-    - `200 OK` if successful, with JWT token
+    - `200 OK` if successful, with access and refresh tokens:
+        ```json
+        {
+            "accessToken": "your_jwt_access_token",
+            "refreshToken": "your_jwt_refresh_token"
+        }
+        ```
     - `401 Unauthorized` for invalid credentials
     - `400 Bad Request` for validation errors
 
@@ -117,19 +129,56 @@ The application will start on `http://localhost:8080`.
     - `404 Not Found` if the user does not exist
     - `400 Bad Request` for validation errors
 
-### 5. Protected Route (Dashboard)
+### 5. Refresh Token
+
+- **Endpoint**: `POST /auth/refresh`
+- **Request Body**:
+    ```json
+    {
+        "refreshToken": "your_refresh_token"
+    }
+    ```
+- **Response**:
+    - `200 OK` with a new access token:
+        ```json
+        {
+            "accessToken": "new_jwt_access_token"
+        }
+        ```
+    - `401 Unauthorized` if the refresh token is invalid or expired
+    - `400 Bad Request` for validation errors
+
+### 6. Protected Route (Dashboard)
 
 - **Endpoint**: `GET /protected/dashboard`
 - **Authorization**: Bearer token required
 - **Response**:
     - `200 OK` with a message if the JWT token is valid
+    - `403 Forbidden` if the user lacks the necessary role
     - `401 Unauthorized` if the JWT token is invalid or missing
 
+### 7. Role-Based Protected Route
 
+- **Endpoint**: `GET /protected/admin`
+- **Authorization**: Bearer token required
+- **Response**:
+    - `200 OK` with a message if the user has the `admin` role
+    - `403 Forbidden` if the user lacks the `admin` role
+    - `401 Unauthorized` if the JWT token is invalid or missing
+
+## Enhancements
+
+- **Refresh Token Rotation**: The system rotates refresh tokens on every usage, enhancing security.
+- **Role-Based Access Control**: Different routes are restricted based on user roles (e.g., "admin" or "user").
+- **Enhanced JWT Structure**:
+    - Includes `iss` (issuer), `aud` (audience), `exp` (expiration), `iat` (issued at), and `sub` (subject) claims.
+    - Signed with RS256 using a private/public key pair for access tokens.
+    - Refresh tokens use HS256 for simpler validation.
 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
 
 ## Acknowledgments
 
