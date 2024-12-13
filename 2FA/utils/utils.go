@@ -11,14 +11,15 @@ import (
 var jwtKey = []byte(os.Getenv("JWT_SECRET"))
 var tokenTTL = time.Minute * 15 // Token TTL (15 minutes)
 
-func GenerateJWT(userID uint, role string) (string, error) {
+func GenerateJWT(userID uint, role string, audience string, scopes []string) (string, error) {
 	claims := jwt.MapClaims{
-		"sub":  userID,                          // Subject (user ID)
-		"role": role,                            // User's role
-		"aud":  "your-application",              // Audience
-		"iss":  "your-auth-server",              // Issuer
-		"iat":  time.Now().Unix(),               // Issued at
-		"exp":  time.Now().Add(tokenTTL).Unix(), // Expiration time
+		"sub":   userID,                          // Subject (user ID)
+		"role":  role,                            // User's role
+		"aud":   audience,                        // Audience
+		"iss":   "your-auth-server",              // Issuer
+		"scope": scopes,                          // Define allowed scopes
+		"iat":   time.Now().Unix(),               // Issued at
+		"exp":   time.Now().Add(tokenTTL).Unix(), // Expiration time
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 

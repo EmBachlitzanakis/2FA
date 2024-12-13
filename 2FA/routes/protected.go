@@ -7,10 +7,13 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-// Protected routes
 func ProtectedRoutes(app *fiber.App) {
-	protected := app.Group("/protected", middleware.JWTMiddleware)
-	// Role-based access for dashboard
-	protected.Get("/dashboard", middleware.AuthorizeRoles("admin", "moderator"), handlers.Dashboard)
+	protected := app.Group("/protected")
 
+	// Dashboard: Requires JWT, specific role(s), and scope(s)
+	protected.Get("/dashboard",
+		middleware.JWTMiddleware("your-application", []string{"read:dashboard"}), // Validates audience and scopes
+		middleware.AuthorizeRoles("admin", "moderator"),                          // Validates roles
+		handlers.Dashboard,
+	)
 }

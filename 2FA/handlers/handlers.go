@@ -71,7 +71,30 @@ func Login(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "Login successful. Please verify 2FA."})
 	}
 
-	accessToken, err := utils.GenerateJWT(user.ID, user.Role.Name)
+	// // Dynamically assign scopes based on the user's role
+	// var scopes []string
+	// switch user.Role.Name {
+	// case "admin":
+	//     scopes = []string{"read:profile", "write:data", "delete:account"}
+	// case "moderator":
+	//     scopes = []string{"read:profile", "write:data"}
+	// case "user":
+	//     scopes = []string{"read:profile"}
+	// default:
+	//     scopes = []string{} // No scopes for unknown roles
+	// }
+
+	// Fetch permissions/scopes from the database based on the user's role or ID
+	var userPermissions []string
+	if err := database.DB.Model(&user).Association("Permissions").Find(&userPermissions); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error fetching permissions"})
+	}
+
+	// Assign the permissions as scopes
+	scopes := userPermissions
+
+	// Generate access token with dynamic scopes
+	accessToken, err := utils.GenerateJWT(user.ID, user.Role.Name, "your-application", scopes)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error generating token"})
 	}
@@ -182,8 +205,15 @@ func RefreshToken(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid refresh token"})
 	}
 
-	// Generate a new access token
-	accessToken, err := utils.GenerateJWT(user.ID, user.Role.Name)
+	// Fetch permissions/scopes from the database based on the user's role or ID
+	var userPermissions []string
+	if err := database.DB.Model(&user).Association("Permissions").Find(&userPermissions); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error fetching permissions"})
+	}
+
+	// Assign the permissions as scopes
+	scopes := userPermissions
+	accessToken, err := utils.GenerateJWT(user.ID, user.Role.Name, "your-application", scopes)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error generating access token"})
 	}
