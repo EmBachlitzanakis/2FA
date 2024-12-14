@@ -11,6 +11,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 // JWT secret and token expiration time
@@ -48,7 +49,7 @@ func SignUp(c *fiber.Ctx) error {
 }
 
 // login handles user login (username/password verification)
-func Login(c *fiber.Ctx) error {
+func Login(c *fiber.Ctx, db *gorm.DB, encryptionPassword string) error {
 	var credentials struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -59,7 +60,7 @@ func Login(c *fiber.Ctx) error {
 	}
 
 	var user model.User
-	if err := database.DB.Where("username = ?", credentials.Username).First(&user).Error; err != nil {
+	if err := db.Where("username = ?", credentials.Username).First(&user).Error; err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid credentials"})
 	}
 
@@ -71,22 +72,9 @@ func Login(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "Login successful. Please verify 2FA."})
 	}
 
-	// // Dynamically assign scopes based on the user's role
-	// var scopes []string
-	// switch user.Role.Name {
-	// case "admin":
-	//     scopes = []string{"read:profile", "write:data", "delete:account"}
-	// case "moderator":
-	//     scopes = []string{"read:profile", "write:data"}
-	// case "user":
-	//     scopes = []string{"read:profile"}
-	// default:
-	//     scopes = []string{} // No scopes for unknown roles
-	// }
-
 	// Fetch permissions/scopes from the database based on the user's role or ID
 	var userPermissions []string
-	if err := database.DB.Model(&user).Association("Permissions").Find(&userPermissions); err != nil {
+	if err := db.Model(&user).Association("Permissions").Find(&userPermissions); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error fetching permissions"})
 	}
 
@@ -94,19 +82,20 @@ func Login(c *fiber.Ctx) error {
 	scopes := userPermissions
 
 	// Generate access token with dynamic scopes
-	accessToken, err := utils.GenerateJWT(user.ID, user.Role.Name, "your-application", scopes)
+	accessToken, err := utils.GenerateJWT(db, encryptionPassword, user.ID, user.Role.Name, "your-application", scopes)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error generating token"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error generating access token"})
 	}
 
+	// Generate refresh token
 	refreshToken, err := utils.GenerateRefreshToken(user.ID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error generating refresh token"})
 	}
 
-	// Store refresh token securely (optional)
+	// Store refresh token securely
 	user.RefreshToken = refreshToken
-	if err := database.DB.Save(&user).Error; err != nil {
+	if err := db.Save(&user).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error saving refresh token"})
 	}
 
@@ -170,7 +159,7 @@ func Verify2FA(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "2FA code is valid"})
 }
 
-func RefreshToken(c *fiber.Ctx) error {
+func RefreshToken(c *fiber.Ctx, db *gorm.DB, encryptionPassword string) error {
 	var req struct {
 		RefreshToken string `json:"refresh_token"`
 	}
@@ -181,7 +170,7 @@ func RefreshToken(c *fiber.Ctx) error {
 
 	// Parse and validate the refresh token
 	token, err := jwt.Parse(req.RefreshToken, func(token *jwt.Token) (interface{}, error) {
-		return jwtKey, nil
+		return jwtKey, nil // Use your secret or public key for validation if required
 	})
 
 	if err != nil || !token.Valid {
@@ -197,7 +186,7 @@ func RefreshToken(c *fiber.Ctx) error {
 
 	// Verify refresh token matches the stored token (if stored)
 	var user model.User
-	if err := database.DB.First(&user, userID).Error; err != nil {
+	if err := db.First(&user, userID).Error; err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "User not found"})
 	}
 
@@ -207,13 +196,15 @@ func RefreshToken(c *fiber.Ctx) error {
 
 	// Fetch permissions/scopes from the database based on the user's role or ID
 	var userPermissions []string
-	if err := database.DB.Model(&user).Association("Permissions").Find(&userPermissions); err != nil {
+	if err := db.Model(&user).Association("Permissions").Find(&userPermissions); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error fetching permissions"})
 	}
 
 	// Assign the permissions as scopes
 	scopes := userPermissions
-	accessToken, err := utils.GenerateJWT(user.ID, user.Role.Name, "your-application", scopes)
+
+	// Generate a new access token
+	accessToken, err := utils.GenerateJWT(db, encryptionPassword, user.ID, user.Role.Name, "your-application", scopes)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error generating access token"})
 	}

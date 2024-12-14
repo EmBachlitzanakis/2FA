@@ -7,55 +7,58 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
+	"gorm.io/gorm"
 )
 
-func JWTMiddleware(c *fiber.Ctx) error {
-	authHeader := c.Get("Authorization")
-	if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Missing or invalid token"})
-	}
-
-	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
-
-	// Load public key for verification
-	publicKey, err := utils.LoadPublicKey()
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error loading public key"})
-	}
-
-	// Parse and verify the token
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+func JWTMiddleware(db *gorm.DB, encryptionPassword string) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		authHeader := c.Get("Authorization")
+		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Missing or invalid token"})
 		}
-		return publicKey, nil
-	})
 
-	if err != nil || !token.Valid {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid token"})
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+
+		// Load public key for verification from the database
+		publicKey, err := utils.LoadPublicKey(db, encryptionPassword)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Error loading public key"})
+		}
+
+		// Parse and verify the token
+		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return publicKey, nil
+		})
+
+		if err != nil || !token.Valid {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid token"})
+		}
+
+		// Extract claims
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid claims"})
+		}
+
+		// Validate 'aud' claim
+		if claims["aud"] != "your-application" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid audience"})
+		}
+
+		// Validate 'iss' claim
+		if claims["iss"] != "your-auth-server" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid issuer"})
+		}
+
+		// Set user details in context
+		c.Locals("userID", claims["sub"])
+		c.Locals("userRole", claims["role"])
+
+		return c.Next()
 	}
-
-	// Extract claims
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid claims"})
-	}
-
-	// Validate 'aud' claim
-	if claims["aud"] != "your-application" {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid audience"})
-	}
-
-	// Validate 'iss' claim
-	if claims["iss"] != "your-auth-server" {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "Invalid issuer"})
-	}
-
-	// Set user details in context
-	c.Locals("userID", claims["sub"])
-	c.Locals("userRole", claims["role"])
-
-	return c.Next()
 }
 
 func AuthorizeRoles(roles ...string) fiber.Handler {
